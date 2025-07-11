@@ -1,0 +1,361 @@
+---
+title: "Dashboard: Corrupción y Votos en Elecciones Perú 2018"
+author: "Ulix Arispe"
+date: "`r Sys.Date()`"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: readable
+    source_code: embed
+---
+
+# Introducción
+
+### Tema de Investigación
+
+Impacto de los escándalos de corrupción en el desempeño electoral de partidos políticos en elecciones regionales en Perú (2018)
+
+### Justificación del Tema
+
+La corrupción afecta la confianza en las instituciones. Analizar si los votantes penalizan la corrupción electoralmente permite entender el nivel de madurez cívica en contextos democráticos. En el plano práctico, Perú ha atravesado numerosos escándalos de corrupción entre 2011 y 2018, que involucraron tanto a partidos nacionales como a movimientos regionales. Evaluar si esos escándalos afectaron el voto en las elecciones regionales de 2018 ayuda a comprender mejor el comportamiento electoral y la eficacia del control ciudadano.Esta investigación busca explorar si las organizaciones políticas involucradas en corrupción obtienen menor apoyo electoral.
+
+### Variable dependiente  
+- Desempeño electoral (**votos_validos**): cantidad de votos válidos obtenidos por organización política
+
+### Variables independientes  
+1. Involucramientos en corrupción (involucrado_corrupcion)
+2. Antigüedad del partido (antiguedad)
+3. Tipo de organización (tipo_organizacion)
+4. Participación anterior en elecciones (participacion_previa)
+5. Presencia en múltiples regiones (presencia_multiregion)
+
+### Variable de control  
+1.	Nivel de urbanización de la región (nivel_urbanizacion)
+2.	Tamaño del padrón electoral (padron_electoral)
+3.	Nivel de educación promedio regional(educacion_promedio) 
+
+
+### Pregunta de Investigación
+
+¿Los partidos políticos y movimientos regionales involucrados en escándalos de corrupción obtuvieron peores resultados electorales en las elecciones regionales de 2018 en Perú?
+
+### Hipótesis
+
+Los partidos o movimientos regionales vinculados a escándalos de corrupción previos a 2018 recibieron una menor proporción de votos en las elecciones regionales de ese año, en comparación con aquellos que no estuvieron involucrados.
+
+### Metodología
+
+Se utilizaron técnicas de análisis descriptivo, regresión lineal y clusterización, a partir de una base consolidada de datos públicos.
+
+## Limpieza de la base de datos
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readr)
+library(DT)
+library(corrr)
+library(cluster)
+library(factoextra)
+library(psych)
+library(GGally)
+library(caret)
+library(flexdashboard)
+library(plotly)
+```
+
+```{r cargar_datos}
+url <- "https://raw.githubusercontent.com/ulixarispe/corrupcion_votos_peru_2018/main/base_consolidada.csv"
+data <- read_csv(url)
+
+# Ver columnas
+glimpse(data)
+
+# Eliminar NAs y asegurarse de que las variables sean numéricas donde corresponde
+data <- data %>% 
+  drop_na() %>% 
+  mutate(
+    involucrado_corrupcion = as.numeric(involucrado_corrupcion),
+    antiguedad = as.numeric(antiguedad),
+    participacion_previa = as.numeric(participacion_previa),
+    presencia_multiregion = as.numeric(presencia_multiregion),
+    nivel_urbanizacion = as.numeric(nivel_urbanizacion),
+    padron_electoral = as.numeric(padron_electoral),
+    educacion_promedio = as.numeric(educacion_promedio),
+    votos_validos = as.numeric(votos_validos)
+  )
+```
+
+---
+
+# Análisis Descriptivo {.icon-chart-bar}
+
+## Distribución de votos válidos
+
+```{r hist-votos}
+library(dplyr)
+library(ggplot2)
+library(plotly)
+
+data %>%
+  mutate(tuvo_votos = ifelse(votos_validos > 0, "Sí tuvo votos", "No tuvo votos")) %>%
+  count(tuvo_votos) %>%
+  ggplot(aes(x = tuvo_votos, y = n, fill = tuvo_votos)) +
+  geom_col(width = 0.5) +
+  labs(title = "Organizaciones con o sin votos válidos", x = "¿Recibió votos?", y = "Cantidad") +
+  scale_fill_manual(values = c("#f03b20", "#2c7fb8")) +
+  theme_minimal() -> p_votos_binario
+
+ggplotly(p_votos_binario)
+
+```
+
+```{r}
+tabla <- data %>%
+  group_by(organizacion_politica, involucrado_corrupcion) %>%
+  summarise(cantidad = n(), .groups = "drop")
+
+p2 <- ggplot(tabla, aes(x = cantidad, y = reorder(organizacion_politica, cantidad), fill = involucrado_corrupcion)) +
+  geom_col(position = "stack") +
+  labs(
+    title = "Corrupción por organización política",
+    y = "Organización política",
+    x = "Cantidad de candidatos"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 4)  # Aquí haces más pequeñas las etiquetas de las organizaciones
+  )
+
+ggplotly(p2, height = 700)
+
+```
+
+## Tabla general
+
+```{r tabla}
+datatable(head(data))
+```
+
+## Estadísticas generales
+
+```{r resumen}
+summary(select(data, votos_validos, involucrado_corrupcion, antiguedad, participacion_previa, educacion_promedio))
+```
+
+---
+
+# Análisis Bivariado {.icon-line-chart}
+
+### Correlaciones con votos válidos
+
+```{r correlacion}
+library(ggplot2)
+library(plotly)
+
+# Opción: eliminar valores extremos si los hay
+percentil_99 <- quantile(data$votos_validos, 0.99, na.rm = TRUE)
+datos_filtrados <- data[data$votos_validos <= percentil_99, ]
+
+# Gráfico ajustado con cajas más delgadas y eje X expandido
+p3 <- ggplot(datos_filtrados, aes(x = involucrado_corrupcion, y = votos_validos, fill = involucrado_corrupcion)) +
+  geom_boxplot(width = 0.2, outlier.size = 1.5) +  # cajas más angostas
+  scale_y_log10() +
+  scale_x_discrete(expand = expansion(mult = c(0.3, 0.3))) +  # más espacio en eje X
+  labs(
+    title = "Votos válidos según involucramiento en corrupción (escala logarítmica)",
+    x = "¿Involucrado en corrupción?",
+    y = "Votos válidos (escala logarítmica)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 10),
+    axis.text = element_text(size = 10)
+  )
+
+# Mostrar con tamaño adecuado
+ggplotly(p3)
+
+```
+
+### Gráficos de dispersión
+
+```{r}
+p_urb <- ggplot(data, aes(x = nivel_urbanizacion, y = votos_validos, fill = nivel_urbanizacion)) +
+  geom_boxplot(width = 0.3, outlier.size = 1.5) +
+  scale_y_log10() +
+  labs(
+    title = "Votos válidos según nivel de urbanización",
+    x = "Nivel de urbanización",
+    y = "Votos válidos (escala logarítmica)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggplotly(p_urb, width = 600, height = 500)
+
+```
+
+### Gráfico de dispersión
+```{r}
+p_edu <- ggplot(data, aes(x = educacion_promedio, y = votos_validos)) +
+  geom_point(alpha = 0.4, color = "#2c7fb8") +
+  scale_y_log10() +
+  labs(
+    title = "Relación entre educación promedio y votos válidos",
+    x = "Educación promedio",
+    y = "Votos válidos (log)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 10))
+
+ggplotly(p_edu)
+
+```
+
+### Gráfico de barras: Participación previa vs. corrupción
+```{r}
+tabla_prev <- data %>%
+  group_by(participacion_previa, involucrado_corrupcion) %>%
+  summarise(n = n(), .groups = "drop")
+
+p_prev <- ggplot(tabla_prev, aes(x = participacion_previa, y = n, fill = involucrado_corrupcion)) +
+  geom_col(position = "fill") +
+  labs(
+    title = "Corrupción según participación previa",
+    x = "¿Participó antes?",
+    y = "Proporción"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 10))
+
+ggplotly(p_prev)
+
+```
+
+---
+
+# Modelos de Regresión {.icon-calculator}
+
+
+```{r regresion-simple}
+data <- data %>%
+  mutate(log_votos = log1p(votos_validos))  # log(1 + votos) para evitar log(0)
+
+```
+
+### Modelo lineal simple
+```{r}
+modelo1 <- lm(log_votos ~ involucrado_corrupcion + tipo_organizacion + participacion_previa + 
+                nivel_urbanizacion + educacion_promedio + presencia_multiregion + antiguedad, data = data)
+
+summary(modelo1)
+
+```
+
+### Intepretación
+
+Se estimó un modelo de regresión lineal para analizar el efecto de distintas variables sobre la cantidad de votos válidos obtenidos por los candidatos (transformada logarítmicamente para corregir sesgo por valores extremos).
+
+Los resultados del modelo indican que ninguna de las variables incluidas presenta un efecto estadísticamente significativo al 95% de confianza. Además, el modelo explica una proporción muy baja de la variabilidad total de los votos válidos (R² = 0.02).
+
+Una posible explicación es que los votos válidos están influenciados por factores no incluidos en el modelo (como notoriedad pública, presupuesto de campaña, cobertura mediática, etc.), o que la información disponible no presenta variación suficiente.
+
+Se recomienda probar modelos con otras combinaciones de variables o incluir interacciones para captar efectos más complejos.
+
+---
+
+# Análisis Clúster {.icon-project-diagram}
+
+### Análisis de clúster
+
+#### Objetivo
+
+Este análisis tiene como objetivo **agrupar a las organizaciones políticas** en función de sus características estructurales y de contexto, como educación promedio, nivel de urbanización, antigüedad, participación previa, etc., para identificar posibles perfiles o patrones comunes entre ellas.
+
+
+```{r factorial}
+# Selección de variables numéricas relevantes para el clúster
+clust_data <- data %>%
+  group_by(organizacion_politica) %>%
+  summarise(
+    educacion_promedio = mean(educacion_promedio, na.rm = TRUE),
+    nivel_urbanizacion = mean(nivel_urbanizacion, na.rm = TRUE),
+    antiguedad = mean(antiguedad, na.rm = TRUE),
+    participacion_previa = mean(participacion_previa, na.rm = TRUE),
+    presencia_multiregion = mean(presencia_multiregion, na.rm = TRUE)
+  ) %>%
+  column_to_rownames("organizacion_politica")  # Necesario para clustering
+
+# Estandarización
+clust_scaled <- scale(clust_data)
+```
+
+```{r}
+set.seed(123)  # Para reproducibilidad
+
+# Elegimos 3 clústeres como ejemplo (puedes probar con otros valores)
+kmeans_result <- kmeans(clust_scaled, centers = 3, nstart = 25)
+
+# Agregar la asignación de clúster a los datos originales
+clust_data$cluster <- as.factor(kmeans_result$cluster)
+
+```
+
+```{r}
+library(ggplot2)
+library(plotly)
+
+# Visualizamos con dos dimensiones principales: educación y urbanización
+p_cluster <- ggplot(clust_data, aes(x = educacion_promedio, y = nivel_urbanizacion, color = cluster)) +
+  geom_point(size = 4) +
+  geom_text(aes(label = rownames(clust_data)), size = 2, vjust = -1, check_overlap = TRUE) +
+  labs(
+    title = "Clústeres de organizaciones políticas",
+    x = "Educación promedio",
+    y = "Nivel de urbanización"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplotly(p_cluster)
+
+```
+
+### Interpretación
+
+Los clústeres encontrados permiten identificar grupos de organizaciones políticas con características similares. Esto puede sugerir que ciertos perfiles estructurales (por ejemplo, partidos con alta educación y presencia multirregional) tienden a agruparse, lo que podría ser útil para análisis posteriores o estrategias políticas.
+
+---
+
+# Conclusiones y Bibliografía
+
+## Conclusiones
+
+### Conclusiones
+
+El presente análisis exploró la relación entre el involucramiento en casos de corrupción y la cantidad de votos válidos obtenidos por los candidatos en las elecciones regionales de Perú en 2018.
+
+En el análisis descriptivo, se observó que la mayoría de candidatos no estaban involucrados en casos de corrupción, aunque algunas organizaciones políticas concentraban una mayor proporción de estos casos.
+
+En el análisis bivariado, no se encontraron diferencias claras en la distribución de votos válidos entre candidatos involucrados o no en corrupción. A través del modelo de regresión, se comprobó que ninguna de las variables incluidas (corrupción, tipo de organización, antigüedad, nivel de urbanización, educación, entre otras) tuvo un efecto estadísticamente significativo sobre los votos válidos.
+
+Estos resultados sugieren que el involucramiento en corrupción, al menos según los datos disponibles, **no tuvo un impacto claro en los resultados electorales**. Esto podría indicar una baja sensibilidad del electorado frente a este tema o una falta de información pública al respecto. No obstante, se recomienda ampliar el análisis con más variables y datos cualitativos.
+
+
+### Recomendaciones
+
+- Ampliar el análisis incorporando variables como presupuesto de campaña, visibilidad en medios, alianzas políticas o historial judicial completo.
+- Realizar estudios cualitativos sobre el comportamiento del electorado frente a candidatos involucrados en corrupción.
+- Promover mayor transparencia en las campañas y difusión de información sobre antecedentes judiciales de los candidatos.
+
+
+## Bibliografía
+### Bibliografía
+- Jurado Nacional de Elecciones (2018)
+- INEI (2018)
+- Poder Judicial del Perú (2018)
